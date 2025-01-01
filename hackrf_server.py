@@ -34,7 +34,19 @@ class Server:
         i = 0
         try:
             while True:
-                time.sleep(0.25)
+                # Приём данных от клиента
+                data = self.client_socket.recv(1024)
+                if not data:
+                    continue
+
+                # Распаковка данных
+                #packed_size = struct.unpack('>i', data[:4])[0]
+                packed_size = 16
+                packed_data = data
+                numbers = struct.unpack(f'>{packed_size // 8}d', packed_data)
+
+                # Отображение данных в командной строке
+                print(f"Received data: {numbers}")
         except (ConnectionResetError, BrokenPipeError):
             print(f"Connection from {self.client_addr} was closed.")
         finally:
