@@ -43,10 +43,10 @@ class Server:
                 #packed_size = struct.unpack('>i', data[:4])[0]
                 packed_size = 16
                 packed_data = data
-                numbers = struct.unpack(f'>{packed_size // 8}d', packed_data)
+                new_ranges = struct.unpack(f'>{packed_size // 8}d', packed_data)
 
                 # Отображение данных в командной строке
-                print(f"Received data: {numbers}")
+                print(f"Received data: {new_ranges}")
         except (ConnectionResetError, BrokenPipeError):
             print(f"Connection from {self.client_addr} was closed.")
         finally:
@@ -60,20 +60,20 @@ class HackrfSweepParser:
     def __init__(self, server):
         self.current_buffer = []
         self.server = server
+        self.current_ranges = (3000.0, 5000.0)
 
     def buffer_to_packed_points(self, buffer):
         result = []
         for line in buffer:
             _, hz_low, hz_high, hz_bin_width, dbs = line
             for i in range(0, 5):
-                result.append(float((int(hz_low) + float(hz_bin_width) * (i + 1)) / 2)) #x
+                result.append(float((int(hz_low) + int(hz_low) + float(hz_bin_width) * (i + 1)) / 2)) #x
                 result.append(float(dbs[i])) #y
         return result
 
     def parse_hackrf_sweep(self):
         # Команда для запуска hackrf_sweep
-        command = ["hackrf_sweep"]
-
+        command = ["hackrf_sweep", "-f", f"{int(self.current_ranges[0])}:{int(self.current_ranges[1])}"]
         try:
             # Запуск процесса
             process = subprocess.Popen(
@@ -99,7 +99,7 @@ class HackrfSweepParser:
                         hz_high = fields[3]
                         hz_bin_width = fields[4]
                         dbs = [fields[6 + i] for i in range(5)]
-                        if int(hz_low) == 0 and len(self.current_buffer) > 0:
+                        if int(hz_low) == int(self.current_ranges[0])*1e6 and len(self.current_buffer) > 0:
                             result = self.buffer_to_packed_points(self.current_buffer)
                             data_to_send = DataPacker.pack_data(result)
                             self.server.send_data(data_to_send)
