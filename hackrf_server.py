@@ -5,36 +5,6 @@ import binascii
 import time
 from abc import ABC, abstractmethod
 
-class WaveGenerator(ABC):
-    @abstractmethod
-    def generate(self, size):
-        pass
-
-class SineWaveGenerator(WaveGenerator):
-    def __init__(self, frequency=1.0, amplitude=1.0):
-        self.frequency = frequency
-        self.amplitude = amplitude
-
-    def generate(self, size):
-        sine_wave = []
-        for i in range(size):
-            x = i / (size - 1) * 2 * math.pi  # Normalize i to the range [0, 2*pi]
-            y = self.amplitude * math.sin(self.frequency * x)
-            sine_wave.extend([y, x])
-        return sine_wave
-
-class LineGenerator(WaveGenerator):
-    def __init__(self, multiplier):
-        self.multiplier = multiplier
-
-    def generate(self, size):
-        result = []
-        for i in range(size):
-            x = i
-            y = i + self.multiplier / 10
-            result.extend([x, y])
-        return result
-
 class DataPacker:
     @staticmethod
     def pack_data(data):
@@ -43,10 +13,9 @@ class DataPacker:
         return packed_size + packed_data
 
 class Server:
-    def __init__(self, host, port, wave_generator):
+    def __init__(self, host, port):
         self.host = host
         self.port = port
-        self.wave_generator = wave_generator
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.bind((self.host, self.port))
         self.server_socket.listen(1)
@@ -141,8 +110,7 @@ class HackrfSweepParser:
 if __name__ == "__main__":
     host = '127.0.0.1'
     port = 12345
-    wave_generator = LineGenerator(multiplier=1)  # You can switch to SineWaveGenerator if needed
-    server = Server(host, port, wave_generator)
+    server = Server(host, port)
     parser = HackrfSweepParser(server)
 
     # Start the server in a separate thread
