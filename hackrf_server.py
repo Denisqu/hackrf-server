@@ -31,12 +31,12 @@ class Server:
             self.handle_client()
 
     def handle_client(self):
-        i = 0
         try:
             while True:
                 # Приём данных от клиента
-                data = self.client_socket.recv(1024)
+                data = self.client_socket.recv(16)
                 if not data:
+                    print('no data... continue...')
                     continue
 
                 # Распаковка данных
@@ -47,6 +47,11 @@ class Server:
 
                 # Отображение данных в командной строке
                 print(f"Received data: {new_ranges}")
+
+                # Проверка и перезапуск парсера, если диапазоны отличаются
+                if new_ranges != self.parser.current_ranges:
+                    self.parser.current_ranges = new_ranges
+                    self.parser.restart_parser()
         except (ConnectionResetError, BrokenPipeError):
             print(f"Connection from {self.client_addr} was closed.")
         finally:
@@ -60,11 +65,14 @@ class HackrfSweepParser:
     def __init__(self, server):
         self.current_buffer = []
         self.server = server
-        self.current_ranges = (3000.0, 5000.0)
+        self.current_ranges = (0, 6000)
+        self.process = None
+        self.parser_thread = None
 
     def buffer_to_packed_points(self, buffer):
         result = []
-        for line in buffer:
+        sorted_buffer = sorted(buffer, key=lambda x: float(x[1]))
+        for line in sorted_buffer:
             _, hz_low, hz_high, hz_bin_width, dbs = line
             for i in range(0, 5):
                 result.append(float((int(hz_low) + int(hz_low) + float(hz_bin_width) * (i + 1)) / 2)) #x
@@ -76,7 +84,7 @@ class HackrfSweepParser:
         command = ["hackrf_sweep", "-f", f"{int(self.current_ranges[0])}:{int(self.current_ranges[1])}"]
         try:
             # Запуск процесса
-            process = subprocess.Popen(
+            self.process = subprocess.Popen(
                 command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -87,7 +95,7 @@ class HackrfSweepParser:
 
             # Обработка вывода в реальном времени
             previous_date_time = None
-            for line in process.stdout:
+            for line in self.process.stdout:
                 # Удаляем лишние пробелы и проверяем, содержит ли строка данные
                 line = line.strip()
                 if "," in line:
@@ -115,15 +123,29 @@ class HackrfSweepParser:
             print(f"Произошла ошибка: {e}")
         finally:
             try:
-                process.terminate()
+                if self.process:
+                    self.process.terminate()
             except Exception:
                 pass
+
+    def restart_parser(self):
+        # Остановка текущего процесса
+        if self.process:
+            self.process.terminate()
+
+        # Перезапуск парсера в отдельном потоке
+        if self.parser_thread and self.parser_thread.is_alive():
+            self.parser_thread.join()
+
+        self.parser_thread = threading.Thread(target=self.parse_hackrf_sweep)
+        self.parser_thread.start()
 
 if __name__ == "__main__":
     host = '127.0.0.1'
     port = 12345
     server = Server(host, port)
     parser = HackrfSweepParser(server)
+    server.parser = parser  # Добавление ссылки на парсер в сервер
 
     # Start the server in a separate thread
     import threading
