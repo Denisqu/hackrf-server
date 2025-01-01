@@ -3,73 +3,82 @@ import struct
 import math
 import binascii
 import time
+from abc import ABC, abstractmethod
 
-def generate_sine_wave(size, frequency=1.0, amplitude=1.0):
-    sine_wave = []
-    for i in range(size):
-        x = i / (size - 1) * 2 * math.pi  # Normalize i to the range [0, 2*pi]
-        y = amplitude * math.sin(frequency * x)
-        sine_wave.extend([y, x])
-    return sine_wave
+class WaveGenerator(ABC):
+    @abstractmethod
+    def generate(self, size):
+        pass
 
-def generate_line(size, multiplier):
-    result = []
-    for i in range(size):
-        x = i
-        y = i + multiplier/10
-        result.extend([x, y])
-    return result
+class SineWaveGenerator(WaveGenerator):
+    def __init__(self, frequency=1.0, amplitude=1.0):
+        self.frequency = frequency
+        self.amplitude = amplitude
 
-def main():
-    host = '127.0.0.1'  # Localhost
-    port = 12345        # Port to listen on
+    def generate(self, size):
+        sine_wave = []
+        for i in range(size):
+            x = i / (size - 1) * 2 * math.pi  # Normalize i to the range [0, 2*pi]
+            y = self.amplitude * math.sin(self.frequency * x)
+            sine_wave.extend([y, x])
+        return sine_wave
 
-    # Create a TCP/IP socket
-    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+class LineGenerator(WaveGenerator):
+    def __init__(self, multiplier):
+        self.multiplier = multiplier
 
-    # Bind the socket to the address
-    server_socket.bind((host, port))
+    def generate(self, size):
+        result = []
+        for i in range(size):
+            x = i
+            y = i + self.multiplier / 10
+            result.extend([x, y])
+        return result
 
-    # Listen for incoming connections
-    server_socket.listen(1)
-    print(f"Server listening on {host}:{port}")
+class DataPacker:
+    @staticmethod
+    def pack_data(data):
+        packed_data = struct.pack(f'>{len(data)}d', *data)
+        packed_size = struct.pack('>i', len(packed_data))
+        return packed_size + packed_data
 
-    while True:
-        # Wait for a connection
-        print("Waiting for a connection...")
-        client_socket, addr = server_socket.accept()
-        print(f"Connection from {addr}")
+class Server:
+    def __init__(self, host, port, wave_generator):
+        self.host = host
+        self.port = port
+        self.wave_generator = wave_generator
+        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_socket.bind((self.host, self.port))
+        self.server_socket.listen(1)
+
+    def start(self):
+        print(f"Server listening on {self.host}:{self.port}")
+        while True:
+            print("Waiting for a connection...")
+            client_socket, addr = self.server_socket.accept()
+            print(f"Connection from {addr}")
+            self.handle_client(client_socket, addr)
+
+    def handle_client(self, client_socket, addr):
         i = 0
-
         try:
             while True:
                 i += 1
-                # Generate a sine wave
                 array_size = 100  # Example size, you can change this
-                sine_wave = generate_line(array_size, i)  # generate_sine_wave(array_size)
-
-                # Pack the sine wave array as big-endian
-                packed_sine_wave = struct.pack(f'>{len(sine_wave)}d', *sine_wave)
-
-                # Pack the array size in bytes as int32 (big-endian)
-                packed_size = struct.pack('>i', len(packed_sine_wave))
-
-                # Combine packed size and packed sine wave array
-                data_to_send = packed_size + packed_sine_wave
-
-                # Send the packed size followed by the packed sine wave array
+                wave_data = self.wave_generator.generate(array_size)
+                data_to_send = DataPacker.pack_data(wave_data)
                 client_socket.sendall(data_to_send)
-
-                # Print the sent data in hex format
                 hex_data = binascii.hexlify(data_to_send).decode('utf-8')
                 print(f"Sent data to {addr} in hex format: {hex_data}")
                 time.sleep(1)
-
         except (ConnectionResetError, BrokenPipeError):
             print(f"Connection from {addr} was closed.")
         finally:
-            # Clean up the connection
             client_socket.close()
 
 if __name__ == "__main__":
-    main()
+    host = '127.0.0.1'
+    port = 12345
+    wave_generator = LineGenerator(multiplier=1)  # You can switch to SineWaveGenerator if needed
+    server = Server(host, port, wave_generator)
+    server.start()
