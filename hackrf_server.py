@@ -61,14 +61,14 @@ class Server:
         try:
             while True:
                 # Приём данных от клиента
-                data = self.client_socket.recv(16)
+                data = self.client_socket.recv(32)  # Увеличил размер до 32 для 4 double
                 if not data:
                     logger.warning("Получены пустые данные от клиента.")
-                    continue
+                    break  # Завершаем обработку, если данные пустые
 
                 # Распаковка данных
-                packed_size = 16
-                packed_data = data
+                packed_size = 16  # 2 doubles по 8 байт
+                packed_data = data[:packed_size]
                 try:
                     new_ranges = struct.unpack(f'>{packed_size // 8}d', packed_data)
                     logger.debug(f"Полученные данные: {new_ranges}")
@@ -105,6 +105,7 @@ class HackrfSweepParser:
         self.current_ranges = (0, 6000)
         self.process = None
         self.parser_thread = None
+        self.stop_event = threading.Event()  # Событие для остановки потока
         logger.debug("HackrfSweepParser инициализирован.")
 
     def buffer_to_packed_points(self, buffer):
@@ -120,11 +121,10 @@ class HackrfSweepParser:
         return result
 
     def parse_hackrf_sweep(self):
-        while True:
-
+        while not self.stop_event.is_set():  # Проверка события остановки
             if self.process:
-                        self.process.terminate()
-                        logger.info("Процесс hackrf_sweep завершен.")
+                self.process.terminate()
+                logger.info("Процесс hackrf_sweep завершен.")
 
             # Команда для запуска hackrf_sweep
             command = ["hackrf_sweep", "-f", f"{int(self.current_ranges[0])}:{int(self.current_ranges[1])}"]
@@ -138,8 +138,14 @@ class HackrfSweepParser:
                 )
 
                 logger.info("Запущен hackrf_sweep. Ожидание данных...")
-                    # Обработка вывода в реальном времени
+                # Обработка вывода в реальном времени
                 for line in self.process.stdout:
+                    if self.stop_event.is_set():
+                        logger.info("Получен сигнал остановки парсера.")
+                        break  # Выход из цикла чтения строк
+                    
+                    logger.debug(line)
+
                     # Удаляем лишние пробелы и проверяем, содержит ли строка данные
                     line = line.strip()
                     if "," in line:
@@ -147,20 +153,33 @@ class HackrfSweepParser:
                         fields = line.split(", ")
                         if len(fields) > 6:  # Проверяем наличие необходимого количества полей
                             date_time = fields[0] + fields[1]
-                            hz_low = fields[2]
-                            hz_high = fields[3]
-                            hz_bin_width = fields[4]
-                            dbs = [fields[6 + i] for i in range(len(fields) - 6)]
-                            if int(hz_low) == int(self.current_ranges[0])*1e6 and len(self.current_buffer) > 0:
+                            hz_low = fields[2].replace(',', '')  # Удаление запятых
+                            hz_high = fields[3].replace(',', '')  # Удаление запятых
+                            hz_bin_width = fields[4].replace(',', '')  # Удаление запятых
+                            # Удаление запятых из каждого элемента dbs
+                            dbs = [field.replace(',', '') for field in fields[6:]]
+                            try:
+                                # Преобразование строк в числа
+                                hz_low_val = int(float(hz_low))
+                                hz_high_val = int(float(hz_high))
+                                hz_bin_width_val = float(hz_bin_width)
+                                dbs_val = [float(db) for db in dbs]
+                            except ValueError as ve:
+                                logger.error(f"Ошибка преобразования чисел: {ve}")
+                                continue
+
+                            if hz_low_val == int(self.current_ranges[0]) * 1e6 and len(self.current_buffer) > 0:
                                 result = self.buffer_to_packed_points(self.current_buffer)
                                 data_to_send = DataPacker.pack_data(result)
                                 self.server.send_data(data_to_send)
                                 self.current_buffer = []
-                                logger.info("Данные отправлены клиенту после проверки диапазонов.")
-                            self.current_buffer.append((date_time, hz_low, hz_high, hz_bin_width, dbs))
+                                logger.info(f"Данные отправлены клиенту после проверки диапазонов: {self.current_ranges[0]} - {self.current_ranges[1]}")
+                                time.sleep(0.25)
+                            self.current_buffer.append((date_time, hz_low_val, hz_high_val, hz_bin_width_val, dbs_val))
                 logger.info("Прочитаны все sweep-строки.")
             except KeyboardInterrupt:
                 logger.info("Остановка выполнения по Ctrl+C.")
+                break  # Выход из основного цикла
             except Exception as e:
                 logger.error(f"Произошла ошибка в парсере: {e}")
             finally:
@@ -172,20 +191,24 @@ class HackrfSweepParser:
                     logger.error(f"Ошибка при завершении процесса hackrf_sweep: {e}")
 
     def restart_parser(self):
-        # Остановка текущего процесса
-        if self.process:
-            self.process.terminate()
-            logger.info("Текущий процесс hackrf_sweep завершен для перезапуска парсера.")
-
-        # Перезапуск парсера в отдельном потоке
+        # Установка флага остановки текущего потока
         if self.parser_thread and self.parser_thread.is_alive():
-            self.parser_thread.join()
+            logger.info("Сигнал остановки установлен для текущего парсера.")
+            self.stop_event.set()  # Сигнализируем потоку о необходимости остановки
+            self.parser_thread.join()  # Ожидаем завершения потока
             logger.debug("Предыдущий поток парсера завершен.")
-
-        time.sleep(1)
+        
+        # Создаем новый объект события для нового потока
+        self.stop_event = threading.Event()
+        
+        # Перезапуск парсера в отдельном потоке
         self.parser_thread = threading.Thread(target=self.parse_hackrf_sweep, daemon=True)
         self.parser_thread.start()
         logger.info("Парсер hackrf_sweep перезапущен в новом потоке.")
+
+    def stop(self):
+        self.stop_event.set()  # Установка флага остановки
+        logger.info("Сигнал остановки установлен для парсера.")
 
 if __name__ == "__main__":
     host = '127.0.0.1'
@@ -194,11 +217,29 @@ if __name__ == "__main__":
     parser = HackrfSweepParser(server)
     server.parser = parser  # Добавление ссылки на парсер в сервер
 
-    # Start the server in a separate thread
-    server_thread = threading.Thread(target=server.start, daemon=True)
+    # Запуск сервера в отдельном потоке без daemon
+    server_thread = threading.Thread(target=server.start)
     server_thread.start()
     logger.info("Сервер запущен в отдельном потоке.")
 
-    # Start parsing hackrf_sweep data
+    # Запуск парсера
     parser.restart_parser()
-    server_thread.join()
+
+    # Обработка завершения приложения
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        logger.info("Приложение завершается пользователем.")
+    finally:
+        # Остановка парсера
+        parser.stop()
+        # Ожидание завершения парсера
+        if parser.parser_thread and parser.parser_thread.is_alive():
+            parser.parser_thread.join()
+            logger.info("Поток парсера завершен.")
+
+        # Закрытие серверного сокета
+        if server.server_socket:
+            server.server_socket.close()
+            logger.info("Серверный сокет закрыт.")
